@@ -1,0 +1,29 @@
+# Main environment: preprocessing + DDPM + classification.
+#
+# NOTE: StyleGAN2-ADA is NOT covered here. NVIDIA's StyleGAN2-ADA requires
+# an older PyTorch/CUDA stack and must be installed in its own separate
+# environment (see src/generative/stylegan2_ada/README.md).
+#
+# Install torch/torchvision matching your CUDA from https://pytorch.org.
+# This study used torch 2.9.0 (pair with torchvision 0.24.0).
+
+torch==2.9.0
+torchvision==0.24.0
+
+# Numerical / data / IO
+numpy
+pandas
+scikit-learn
+Pillow
+tqdm
+matplotlib
+openpyxl            # Excel report output (classification reporting.py)
+
+# Classification backbones
+efficientnet_pytorch   # EfficientNet-b0
+transformers           # ViT, Swin
+
+# Diffusion (DDPM module)
+diffusers              # Apache-2.0
+datasets
+pytorch-fid            # FID-based DDPM checkpoint selection

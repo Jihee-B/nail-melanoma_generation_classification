@@ -1,0 +1,30 @@
+Nail Unit Melanoma vs. Nail Melanonychia — Generative AI-Augmented Deep Learning
+Copyright 2026 [AUTHORS / INSTITUTION — please fill in]
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+================================================================================
+THIRD-PARTY COMPONENTS
+================================================================================
+The Apache-2.0 license applies to the authors' own code. The following
+components are governed by their own licenses, NOT Apache-2.0:
+
+1. src/generative/stylegan2_ada/interpolate_images.py
+   Adapted from NVIDIA StyleGAN2-ADA (gen_video.py). Remains subject to the
+   NVIDIA Source Code License (research / non-commercial). The original NVIDIA
+   copyright header is retained in the file.
+
+This repository also DEPENDS ON (but does not redistribute) external tools,
+each under its own license — install them separately:
+
+  - NVIDIA StyleGAN2-ADA (PyTorch) ... NVIDIA Source Code License (non-commercial)
+  - Deep White-Balance Editing ....... research-only / non-commercial
+  - Real-ESRGAN ...................... BSD-3-Clause
+  - LaMa (large-mask inpainting) ..... Apache-2.0
+  - HuggingFace diffusers ............ Apache-2.0
+      The DDPM fine-tuning / sampling code (src/generative/ddpm/) is adapted
+      from the HuggingFace Diffusion Models Course, Unit 2 (Apache-2.0):
+      https://huggingface.co/learn/diffusion-course/en/unit2/2
+
+Because some dependencies are restricted to non-commercial use, the pipeline
+as a whole should be treated as research / non-commercial.

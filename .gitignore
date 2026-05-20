@@ -1,0 +1,66 @@
+# =====================================================================
+# Data & artifacts — NEVER commit patient images or large model files
+# =====================================================================
+# Images
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+*.bmp
+
+# Tabular / spreadsheets
+*.csv
+*.tsv
+*.xlsx
+
+# Model weights / checkpoints / archives
+*.pkl
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.zip
+*.tfrecords
+
+# Run / output directories
+output/
+model_checkpoints/
+runs_ddpm/
+fake/
+morph/
+dataset/
+*_resized/
+
+# Logged artifacts
+fid_scores_*.json
+loss_curve*.png
+batch_preview*.png
+image_conversion.log
+
+# =====================================================================
+# Allow-list: keep repo documentation assets (figures, diagrams, etc.)
+# =====================================================================
+!assets/
+!assets/**
+!docs/
+!docs/**
+
+# =====================================================================
+# Python
+# =====================================================================
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# =====================================================================
+# OS / editor
+# =====================================================================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

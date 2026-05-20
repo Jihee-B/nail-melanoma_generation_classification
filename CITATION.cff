@@ -1,0 +1,48 @@
+# Citation metadata for this repository (CFF 1.2.0).
+# GitHub renders a "Cite this repository" button from this file.
+
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "Generative AI-Augmented Deep Learning for Distinguishing Nail Unit Melanoma from Nail Melanonychia: A Multicenter Study with Human-AI Collaboration Analysis"
+type: software
+license: Apache-2.0
+repository-code: "https://github.com/[OWNER]/[REPO]"
+# version: "1.0.0"
+# date-released: "2026-XX-XX"
+# After minting a Zenodo DOI for the release, add it here:
+# doi: "10.5281/zenodo.XXXXXXX"
+
+authors:
+  - family-names: "Kim"
+    given-names: "Jemin"
+    affiliation: "Department of Dermatology and Cutaneous Biology Research Institute, Yongin Severance Hospital, Yonsei University College of Medicine, Gyeonggi-do, Korea"
+  - family-names: "Boo"
+    given-names: "Jihee"
+    affiliation: "Department of Dermatology and Cutaneous Biology Research Institute, Yongin Severance Hospital, Yonsei University College of Medicine, Gyeonggi-do, Korea"
+  - family-names: "Kim"
+    given-names: "Jihee"
+    affiliation: "Department of Dermatology and Cutaneous Biology Research Institute, Yongin Severance Hospital, Yonsei University College of Medicine, Gyeonggi-do, Korea"
+  - family-names: "Choi"
+    given-names: "Jaeha"
+    affiliation: "Computer Science and Engineering, Incheon National University, Incheon, Korea"
+  - family-names: "Park"
+    given-names: "Sangwoo"
+    affiliation: "College of Veterinary Medicine, Jeju National University, Jeju, Korea"
+  - family-names: "Lee"
+    given-names: "GunHee"
+    affiliation: "Department of Pathology, Asan Medical Center, University of Ulsan College of Medicine, Seoul, Korea"
+  - family-names: "Kim"
+    given-names: "Jun Young"
+    affiliation: "Department of Dermatology, Kyungpook National University School of Medicine, Daegu, Korea"
+  - family-names: "Oh"
+    given-names: "Jongwook"
+    affiliation: "Department of Dermatology and Cutaneous Biology Research Institute, Severance Hospital, Yonsei University College of Medicine, Seoul, Korea"
+  - family-names: "Oh"
+    given-names: "Byung Ho"
+    affiliation: "Department of Dermatology and Cutaneous Biology Research Institute, Severance Hospital, Yonsei University College of Medicine, Seoul, Korea"
+    email: "OBH505@yuhs.ac"
+  - family-names: "Roh"
+    given-names: "Mi Ryung"
+    affiliation: "Department of Dermatology and Cutaneous Biology Research Institute, Gangnam Severance Hospital, Yonsei University College of Medicine, Seoul, Korea"
+    email: "karenroh@yuhs.ac"
+

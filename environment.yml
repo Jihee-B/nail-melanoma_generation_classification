@@ -1,0 +1,32 @@
+# Conda environment for the MAIN stack (preprocessing + DDPM + classification).
+#
+# StyleGAN2-ADA needs its own separate environment (older PyTorch/CUDA) —
+# see src/generative/stylegan2_ada/README.md.
+#
+# Create with:   conda env create -f environment.yml
+# Then activate: conda activate nail-melanoma
+#
+# torch/torchvision are installed via pip so you get the build matching your
+# CUDA. This study used torch 2.9.0 / torchvision 0.24.0.
+
+name: nail-melanoma
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - torch==2.9.0
+      - torchvision==0.24.0
+      - numpy
+      - pandas
+      - scikit-learn
+      - Pillow
+      - tqdm
+      - matplotlib
+      - openpyxl
+      - efficientnet_pytorch
+      - transformers
+      - diffusers
+      - datasets
+      - pytorch-fid
