@@ -32,7 +32,7 @@ from torchvision import transforms
 # ---------------------------------------------------------------------------
 # Normalisation constants
 # ---------------------------------------------------------------------------
-# ImageNet-1k statistics used by torchvision-backed models (ResNet18,
+# ImageNet-1k statistics used by torchvision-backed models (ResNeXt-50,
 # EfficientNet-b0) and Swin (whose HuggingFace processor exposes the
 # same values).
 IMAGENET_MEAN: Tuple[float, float, float] = (0.485, 0.456, 0.406)

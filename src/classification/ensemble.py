@@ -1,17 +1,30 @@
-"""Top-K fold selection and probability ensembling.
+"""Full-ensemble utilities and out-of-fold (OOF) threshold selection.
 
-After 10-fold cross-validation, the paper selects the three folds with
-the smallest |val_auc - test_auc| gap and averages their per-image
-softmax probabilities for the positive class. This module implements
-that selection + ensembling pipeline:
+After 10-fold cross-validation, every fold's checkpoint is evaluated on
+the test set and its per-image positive-class probabilities are saved.
+This module:
 
-    1. ``select_topk_folds``   — read validation/test xlsx, rank folds
-                                 by |val_auc - test_auc|, return top-K
-                                 fold IDs and a transparency table.
-    2. ``load_topk_fold_pkls`` — load the per-fold ``*.pkl`` files
-                                 produced by ``cross_validate.py``.
-    3. ``ensemble_from_topk``  — average probabilities across folds and
-                                 threshold to obtain hard predictions.
+    1. ``load_all_fold_pkls``       — load the per-fold test-prediction
+                                      ``*.pkl`` files produced by
+                                      ``cross_validate.py`` (all folds).
+    2. ``ensemble_all_folds``       — average per-image probabilities
+                                      across *all* folds, then threshold.
+    3. ``load_all_val_pkls`` +
+       ``compute_oof_youden_cutoff`` — pool each fold's best-epoch
+                                      validation predictions and derive a
+                                      single classification threshold via
+                                      the Youden index.
+    4. ``build_fold_auc_table``     — a transparency table listing every
+                                      fold's validation and test AUC.
+
+Design note (why the full ensemble, and no fold selection)
+----------------------------------------------------------
+Earlier versions selected the "best" folds by the smallest
+\\|val_auc - test_auc\\| gap. That criterion inspects the *test* AUC to
+choose folds, which leaks test information into model selection. To avoid
+this, all folds are ensembled unconditionally, and the decision threshold
+is chosen from validation (out-of-fold) predictions only — the test set is
+never involved in either fold selection or threshold selection.
 """
 from __future__ import annotations
 
@@ -23,10 +36,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from sklearn.metrics import roc_curve
 
 
 # ---------------------------------------------------------------------------
-# Excel column inference
+# Excel column inference (for the transparency AUC table)
 # ---------------------------------------------------------------------------
 # These helpers exist because the validation/test xlsx files were produced
 # by several iterations of the training scripts and the AUC/fold column
@@ -97,49 +111,21 @@ def _load_fold_auc(xlsx_path: str) -> pd.DataFrame:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Top-K fold selection
-# ---------------------------------------------------------------------------
-def select_topk_folds(
-    val_xlsx: str,
-    test_xlsx: str,
-    topk: int = 3,
-) -> Tuple[List[int], pd.DataFrame]:
-    """Select the ``topk`` folds with the smallest \\|val_auc - test_auc\\|.
+def build_fold_auc_table(val_xlsx: str, test_xlsx: str) -> pd.DataFrame:
+    """Return a per-fold ``(fold, val_auc, test_auc)`` transparency table.
 
-    Args:
-        val_xlsx: Path to ``validation_results.xlsx``.
-        test_xlsx: Path to ``test_results.xlsx``.
-        topk: Number of folds to keep (paper: 3).
-
-    Returns:
-        ``(selected_folds, fold_table)``:
-            - ``selected_folds`` (List[int]): 1-based fold IDs.
-            - ``fold_table`` (DataFrame): every fold with its val/test
-              AUC, absolute gap, rank, and a boolean ``selected_topk``.
-
-    Tie-breaking order (when |val-test| gaps are equal):
-        higher test AUC  ->  higher val AUC  ->  lower fold number.
+    Unlike the previous ``select_topk_folds``, this performs *no* selection
+    — it simply reports each fold's validation and test AUC so that fold
+    variability is visible in the summary output. All folds are ensembled.
     """
     df_val = _load_fold_auc(val_xlsx).rename(columns={"auc": "val_auc"})
     df_test = _load_fold_auc(test_xlsx).rename(columns={"auc": "test_auc"})
-
-    df = pd.merge(df_val, df_test, on="fold", how="inner")
-    df["auc_gap_abs"] = (df["val_auc"] - df["test_auc"]).abs()
-
-    df = df.sort_values(
-        ["auc_gap_abs", "test_auc", "val_auc", "fold"],
-        ascending=[True, False, False, True],
-    ).reset_index(drop=True)
-
-    selected = df.head(topk)["fold"].astype(int).tolist()
-    df["rank_by_gap"] = np.arange(1, len(df) + 1)
-    df["selected_topk"] = df["fold"].isin(selected)
-    return selected, df
+    df = pd.merge(df_val, df_test, on="fold", how="outer").sort_values("fold")
+    return df.reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
-# Probability loading
+# Probability helpers
 # ---------------------------------------------------------------------------
 def _flatten_prob(prob: Any) -> np.ndarray:
     """Accept a list/array of shape ``(N,)`` or ``(N, 1)`` and return ``(N,)``."""
@@ -149,59 +135,73 @@ def _flatten_prob(prob: Any) -> np.ndarray:
     return arr.astype(float)
 
 
-def _find_fold_pkl(run_dir: str, fold: int) -> str:
-    """Locate a fold's test-prediction pkl under ``run_dir``.
+def _discover_folds(run_dir: str, kind: str) -> List[int]:
+    """Return sorted 1-based fold IDs for which a ``*_{kind}_results.pkl``
+    file exists under ``run_dir`` (``kind`` is 'test' or 'val')."""
+    folds = []
+    for p in glob.glob(os.path.join(run_dir, f"fold_*_{kind}_results.pkl")):
+        m = re.search(rf"fold_(\d+)_{kind}_results\.pkl$", os.path.basename(p))
+        if m:
+            folds.append(int(m.group(1)))
+    return sorted(folds)
+
+
+def _find_fold_pkl(run_dir: str, fold: int, kind: str) -> str:
+    """Locate a fold's prediction pkl (``kind`` = 'test' or 'val').
 
     Searches a few common filename patterns, then falls back to a glob.
     """
     patterns = [
-        os.path.join(run_dir, f"fold_{fold}_test_results.pkl"),
-        os.path.join(run_dir, f"fold_{fold}_test.pkl"),
-        os.path.join(run_dir, f"fold{fold}_test_results.pkl"),
-        os.path.join(run_dir, f"fold{fold}_test.pkl"),
+        os.path.join(run_dir, f"fold_{fold}_{kind}_results.pkl"),
+        os.path.join(run_dir, f"fold_{fold}_{kind}.pkl"),
+        os.path.join(run_dir, f"fold{fold}_{kind}_results.pkl"),
+        os.path.join(run_dir, f"fold{fold}_{kind}.pkl"),
     ]
     for p in patterns:
         if os.path.exists(p):
             return p
 
-    matches = glob.glob(os.path.join(run_dir, f"*{fold}*test*.pkl"))
+    matches = glob.glob(os.path.join(run_dir, f"*{fold}*{kind}*.pkl"))
     if matches:
         return sorted(matches)[0]
 
     raise FileNotFoundError(
-        f"[{run_dir}] No test-pkl found for fold={fold}. "
+        f"[{run_dir}] No {kind}-pkl found for fold={fold}. "
         f"Tried these names: {[os.path.basename(p) for p in patterns]}"
     )
 
 
-def load_topk_fold_pkls(
-    run_dir: str,
-    folds: List[int],
-) -> Dict[str, List[np.ndarray]]:
-    """Load per-fold test predictions for the chosen folds.
+# ---------------------------------------------------------------------------
+# Test-prediction loading (all folds)
+# ---------------------------------------------------------------------------
+def load_all_fold_pkls(run_dir: str) -> Dict[str, List[Any]]:
+    """Load per-fold *test* predictions for every fold under ``run_dir``.
 
     Each pkl is expected to be a dict with keys:
         ``test_y_true`` (required),
         ``test_y_prob`` (required),
         ``test_y_pred`` (optional — recomputed from prob if absent).
 
-    Args:
-        run_dir: Directory containing ``fold_*_test_results.pkl`` files.
-        folds: Sequence of 1-based fold IDs to load.
-
     Returns:
-        Dict with keys ``y_true``, ``y_pred``, ``y_prob``, ``pkl_path``;
-        each value is a list with one entry per fold, in the same order
-        as the input ``folds``.
+        Dict with keys ``y_true``, ``y_pred``, ``y_prob``, ``pkl_path``,
+        ``folds``; the array values are lists with one entry per fold, in
+        ascending fold order.
     """
-    out: Dict[str, List[np.ndarray]] = {
+    folds = _discover_folds(run_dir, kind="test")
+    if not folds:
+        raise FileNotFoundError(
+            f"[{run_dir}] No fold_*_test_results.pkl files found."
+        )
+
+    out: Dict[str, List[Any]] = {
         "y_true": [],
         "y_pred": [],
         "y_prob": [],
         "pkl_path": [],
+        "folds": folds,
     }
     for f in folds:
-        pkl_path = _find_fold_pkl(run_dir, f)
+        pkl_path = _find_fold_pkl(run_dir, f, kind="test")
         with open(pkl_path, "rb") as fp:
             d = pickle.load(fp)
         if "test_y_true" not in d or "test_y_prob" not in d:
@@ -224,21 +224,22 @@ def load_topk_fold_pkls(
 
 
 # ---------------------------------------------------------------------------
-# Probability ensembling
+# Probability ensembling (all folds)
 # ---------------------------------------------------------------------------
-def ensemble_from_topk(
-    loaded: Dict[str, List[np.ndarray]],
+def ensemble_all_folds(
+    loaded: Dict[str, List[Any]],
     threshold: float = 0.5,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Average per-image probabilities across folds, then threshold.
+    """Average per-image probabilities across *all* folds, then threshold.
 
     Folds must share the same test-sample order; otherwise probabilities
     correspond to different images and averaging is meaningless. This
     is checked and the function raises ``ValueError`` on mismatch.
 
     Args:
-        loaded: Output of :func:`load_topk_fold_pkls`.
-        threshold: Probability cutoff for the positive class.
+        loaded: Output of :func:`load_all_fold_pkls`.
+        threshold: Probability cutoff for the positive class. Pass the
+            OOF-derived cutoff from :func:`compute_oof_youden_cutoff`.
 
     Returns:
         ``(y_true, y_pred_ensemble, y_prob_ensemble)`` — all 1-D arrays.
@@ -247,14 +248,80 @@ def ensemble_from_topk(
     for i, yt in enumerate(loaded["y_true"][1:], start=1):
         if len(yt) != len(y_true_0) or not np.all(yt == y_true_0):
             raise ValueError(
-                "Top-K folds have inconsistent test_y_true ordering "
+                "Folds have inconsistent test_y_true ordering "
                 f"(fold0 len={len(y_true_0)} vs fold{i} len={len(yt)}). "
                 "Ensembling requires identical test-sample order across folds."
             )
 
     prob_mat = np.vstack(
         [p.reshape(1, -1) for p in loaded["y_prob"]]
-    )  # shape (K, N)
+    )  # shape (n_folds, N)
     avg_prob = np.mean(prob_mat, axis=0)
     y_pred = (avg_prob >= threshold).astype(int)
     return y_true_0, y_pred, avg_prob
+
+
+# ---------------------------------------------------------------------------
+# Out-of-fold (OOF) validation predictions + Youden threshold
+# ---------------------------------------------------------------------------
+def load_all_val_pkls(run_dir: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Pool best-epoch *validation* predictions across all folds.
+
+    Each ``fold_*_val_results.pkl`` (written by ``cross_validate.py``) holds
+    that fold's held-out validation predictions. Because the folds partition
+    the training set, concatenating them yields out-of-fold (OOF) predictions
+    covering every training sample exactly once.
+
+    Returns:
+        ``(oof_y_true, oof_y_prob)`` — concatenated 1-D arrays. Returns
+        empty arrays if no validation pkls are present.
+    """
+    folds = _discover_folds(run_dir, kind="val")
+    all_true: List[np.ndarray] = []
+    all_prob: List[np.ndarray] = []
+    for f in folds:
+        pkl_path = _find_fold_pkl(run_dir, f, kind="val")
+        with open(pkl_path, "rb") as fp:
+            d = pickle.load(fp)
+        if "val_y_true" not in d or "val_y_prob" not in d:
+            raise KeyError(
+                f"[{pkl_path}] Missing required keys. "
+                f"Found: {list(d.keys())}; required: val_y_true, val_y_prob"
+            )
+        all_true.append(np.asarray(d["val_y_true"]).astype(int).reshape(-1))
+        all_prob.append(_flatten_prob(d["val_y_prob"]).reshape(-1))
+
+    if not all_true:
+        return np.array([], dtype=int), np.array([], dtype=float)
+    return np.concatenate(all_true), np.concatenate(all_prob)
+
+
+def compute_oof_youden_cutoff(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+) -> float:
+    """Return the probability threshold that maximises Youden's J = TPR - FPR.
+
+    The threshold is computed from out-of-fold *validation* predictions, so
+    it never sees the test set. ``sklearn.roc_curve`` prepends an infinite
+    threshold; it is clipped to 1.0 so the returned cutoff is always a valid
+    probability in ``[0, 1]``.
+
+    Args:
+        y_true: 1-D array of 0/1 OOF validation labels.
+        y_prob: 1-D array of positive-class probabilities.
+
+    Returns:
+        The Youden-optimal cutoff. Falls back to ``0.5`` if the threshold
+        cannot be computed (e.g., only one class present).
+    """
+    y_true = np.asarray(y_true).astype(int).reshape(-1)
+    y_prob = np.asarray(y_prob).astype(float).reshape(-1)
+    if y_true.size == 0 or len(np.unique(y_true)) < 2:
+        return 0.5
+
+    fpr, tpr, thr = roc_curve(y_true, y_prob)
+    thr = np.clip(thr, 0.0, 1.0)  # roc_curve sets thr[0] = inf
+    youden_j = tpr - fpr
+    best_idx = int(np.argmax(youden_j))
+    return float(thr[best_idx])

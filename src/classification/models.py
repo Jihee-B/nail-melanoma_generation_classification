@@ -10,7 +10,7 @@ The activation is chosen to match each backbone's native non-linearity
 (paper Methods S3: "The activation function was selected to match the
 respective backbone."):
 
-    ResNet18         -> ReLU
+    ResNeXt-50       -> ReLU
     EfficientNet-b0  -> SiLU (Swish)
     ViT-Base         -> GELU
     Swin-Base        -> GELU
@@ -68,17 +68,17 @@ def build_custom_head(
 # ---------------------------------------------------------------------------
 # Backbone-specific wrappers
 # ---------------------------------------------------------------------------
-class ResNet18Binary(nn.Module):
-    """ResNet-18 with a custom FC head (ReLU activation).
+class ResNeXt50Binary(nn.Module):
+    """ResNeXt-50 (32x4d) with a custom FC head (ReLU activation).
 
-    Backbone: ``torchvision.models.resnet18`` initialised with the default
-    ImageNet-1k pretrained weights (V1).
+    Backbone: ``torchvision.models.resnext50_32x4d`` initialised with the
+    default ImageNet-1k pretrained weights (IMAGENET1K_V2).
     """
 
     def __init__(self, dropout_rate: float = 0.3, num_classes: int = 2) -> None:
         super().__init__()
-        self.backbone = tv_models.resnet18(
-            weights=tv_models.ResNet18_Weights.DEFAULT
+        self.backbone = tv_models.resnext50_32x4d(
+            weights=tv_models.ResNeXt50_32X4D_Weights.DEFAULT
         )
         in_features = self.backbone.fc.in_features
         self.backbone.fc = build_custom_head(
@@ -193,7 +193,7 @@ class SwinBinary(nn.Module):
 # Factory
 # ---------------------------------------------------------------------------
 MODEL_REGISTRY: Dict[str, Type[nn.Module]] = {
-    "resnet18": ResNet18Binary,
+    "resnext50": ResNeXt50Binary,
     "efficientnet_b0": EfficientNetB0Binary,
     "vit": ViTBinary,
     "swin": SwinBinary,
@@ -205,7 +205,7 @@ def build_model(name: str, **kwargs) -> nn.Module:
 
     Args:
         name: One of ``MODEL_REGISTRY`` keys
-            ({'resnet18', 'efficientnet_b0', 'vit', 'swin'}).
+            ({'resnext50', 'efficientnet_b0', 'vit', 'swin'}).
         **kwargs: Forwarded to the chosen model's ``__init__``
             (e.g., ``dropout_rate``, ``num_classes``, or ``model_name``
             for HuggingFace-backed models).

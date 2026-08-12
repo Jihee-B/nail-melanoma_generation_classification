@@ -7,8 +7,12 @@ This is the main training entry point. It:
     2. Runs ``StratifiedKFold`` across the training set.
     3. For each fold, trains the configured backbone and saves the
        best-validation-accuracy checkpoint.
-    4. After all folds, evaluates each checkpoint on the test set.
-    5. Saves per-fold predictions (.pkl + .xlsx) and aggregated
+    4. Saves each fold's out-of-fold validation predictions
+       (``fold_*_val_results.pkl``) so that a classification threshold can
+       be derived from validation data alone (Youden index; see
+       ``reporting.py``), without any test-set leakage.
+    5. After all folds, evaluates each checkpoint on the test set.
+    6. Saves per-fold predictions (.pkl + .xlsx) and aggregated
        validation / test summaries (.xlsx).
 
 Usage
@@ -23,6 +27,10 @@ Where:
     - --train-path points to an ImageFolder layout with class subfolders
       (e.g., benign/, melanoma/). Class names are assigned integer labels
       in alphabetical order by ImageFolder, so benign -> 0 and melanoma -> 1.
+      To reproduce a synthetically augmented condition, populate this folder
+      with the desired mix of real and generated images (see
+      ``scripts/04_train_classifiers.sh`` for details); the amount of
+      synthetic data is defined entirely by the folder contents.
     - --test-path points to a flat folder whose filenames encode the label
       as a prefix before the first underscore (e.g., 0_xxx.png, 1_yyy.jpg).
     - --output-dir will hold checkpoints/, performance/, and config.json.
@@ -68,10 +76,10 @@ from .train import evaluate_on_test, train_fold
 # (TODO: migrate to configs/classification/*.yaml in next milestone)
 # ---------------------------------------------------------------------------
 DEFAULT_HPARAMS: Dict[str, Dict[str, Any]] = {
-    "resnet18": {
+    "resnext50": {
         "optimizer": "adam",
         "lr": 1e-3,
-        "weight_decay": 0.0,
+        "weight_decay": 1e-4,
         "eta_min": 1e-5,
         "use_hf_normalization": False,
     },
@@ -320,6 +328,19 @@ def run_cross_validation(args: argparse.Namespace) -> None:
             f"-> {ckpt_path}"
         )
 
+        # Save this fold's best-epoch validation predictions. Pooling these
+        # across all folds gives out-of-fold (OOF) validation predictions,
+        # from which the classification threshold is derived (Youden index)
+        # in reporting.py — no test data is involved in threshold selection.
+        save_pickle(
+            {
+                "val_y_true": result.best_val_true,
+                "val_y_pred": result.best_val_pred,
+                "val_y_prob": result.best_val_prob,
+            },
+            perf_dir / f"fold_{fold_idx + 1}_val_results.pkl",
+        )
+
         fold_summaries.append(
             {
                 "Fold": fold_idx + 1,
@@ -356,8 +377,8 @@ def run_cross_validation(args: argparse.Namespace) -> None:
             f"test_auc={tr.auc:.4f}"
         )
 
-        # .pkl format compatible with auto_perf_top3fold_excel_*.py
-        # (downstream ensembling step).
+        # Per-fold test predictions consumed by the ensembling step
+        # (reporting.py averages probabilities across all folds).
         save_pickle(
             {
                 "test_y_true": tr.y_true.tolist(),

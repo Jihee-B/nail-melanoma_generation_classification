@@ -36,6 +36,7 @@ class FoldResult:
     """Result of training a single CV fold."""
 
     best_state_dict: dict
+    best_val_loss: float
     best_val_acc: float
     best_val_auc: float
     best_val_true: List[int] = field(default_factory=list)
@@ -107,15 +108,18 @@ def train_one_epoch(
 def validate(
     model: nn.Module,
     loader: DataLoader,
+    criterion: nn.Module,
     device: torch.device,
-) -> Tuple[float, float, List[int], List[int], List[float]]:
+) -> Tuple[float, float, float, List[int], List[int], List[float]]:
     """Run one validation pass.
 
     Returns:
-        ``(acc, auc, y_true, y_pred, y_prob)`` where ``y_prob`` is the
+        ``(loss, acc, auc, y_true, y_pred, y_prob)`` where ``loss`` is the
+        mean cross-entropy over the validation set and ``y_prob`` is the
         softmax probability for the positive class (index 1).
     """
     model.eval()
+    running_loss = 0.0
     all_preds: List[int] = []
     all_labels: List[int] = []
     all_probs: List[float] = []
@@ -126,6 +130,9 @@ def validate(
             labels = labels.to(device, non_blocking=True)
 
             outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            running_loss += loss.item() * inputs.size(0)
+
             probs = torch.softmax(outputs, dim=1)[:, 1]
             _, preds = torch.max(outputs, dim=1)
 
@@ -133,12 +140,13 @@ def validate(
             all_labels.extend(labels.cpu().numpy().tolist())
             all_probs.extend(probs.cpu().numpy().tolist())
 
+    val_loss = running_loss / len(loader.dataset)
     acc = accuracy_score(all_labels, all_preds)
     try:
         auc = roc_auc_score(all_labels, all_probs)
     except ValueError:
         auc = 0.5
-    return acc, auc, all_labels, all_preds, all_probs
+    return val_loss, acc, auc, all_labels, all_preds, all_probs
 
 
 # ---------------------------------------------------------------------------
@@ -157,12 +165,13 @@ def train_fold(
     fold_idx: int = 0,
     verbose: bool = True,
 ) -> FoldResult:
-    """Train one CV fold with early stopping by validation accuracy.
+    """Train one CV fold with early stopping by validation loss.
 
     Selection rule (matches the paper / original code):
-        The "best" checkpoint is the epoch with the highest *validation
-        accuracy*. Early stopping triggers if validation accuracy has
-        not improved for ``patience`` consecutive epochs.
+        The "best" checkpoint is the epoch with the lowest *validation
+        loss*. Early stopping triggers if validation loss has not improved
+        for ``patience`` consecutive epochs. Validation accuracy and AUC at
+        that best epoch are recorded alongside for reporting.
 
     Note on best-weights capture:
         Uses ``copy.deepcopy(model.state_dict())`` rather than
@@ -170,6 +179,7 @@ def train_fold(
         whose tensor values remain shared with the live model and would
         be silently overwritten by subsequent training steps.
     """
+    best_val_loss = float("inf")
     best_val_acc = -1.0
     best_val_auc = -1.0
     best_state = None
@@ -190,8 +200,8 @@ def train_fold(
             model, train_loader, optimizer, criterion, device
         )
         scheduler.step()
-        val_acc, val_auc, val_true, val_pred, val_prob = validate(
-            model, val_loader, device
+        val_loss, val_acc, val_auc, val_true, val_pred, val_prob = validate(
+            model, val_loader, criterion, device
         )
 
         current_lr = scheduler.get_last_lr()[0]
@@ -199,13 +209,16 @@ def train_fold(
             {
                 "lr": f"{current_lr:.2e}",
                 "tr_loss": f"{train_loss:.4f}",
-                "tr_acc": f"{train_acc:.4f}",
+                "val_loss": f"{val_loss:.4f}",
                 "val_acc": f"{val_acc:.4f}",
                 "val_auc": f"{val_auc:.4f}",
             }
         )
 
-        if val_acc > best_val_acc:
+        # Best checkpoint = lowest validation loss (small epsilon guards
+        # against selecting a numerically-equal later epoch).
+        if val_loss < best_val_loss - 1e-6:
+            best_val_loss = val_loss
             best_val_acc = val_acc
             best_val_auc = val_auc
             best_state = copy.deepcopy(model.state_dict())
@@ -218,7 +231,7 @@ def train_fold(
                 if verbose:
                     pbar.write(
                         f"  Fold {fold_idx + 1}: early stopping at epoch "
-                        f"{stopped_epoch} (best val_acc={best_val_acc:.4f})."
+                        f"{stopped_epoch} (best val_loss={best_val_loss:.4f})."
                     )
                 break
     else:
@@ -227,13 +240,14 @@ def train_fold(
 
     if best_state is None:
         raise RuntimeError(
-            f"Fold {fold_idx + 1} produced no best state — training never "
-            "yielded a validation accuracy above the initial sentinel. "
-            "Check that validation data and labels are correctly configured."
+            f"Fold {fold_idx + 1} produced no best state — validation loss "
+            "never improved below the initial sentinel. Check that "
+            "validation data and labels are correctly configured."
         )
 
     return FoldResult(
         best_state_dict=best_state,
+        best_val_loss=best_val_loss,
         best_val_acc=best_val_acc,
         best_val_auc=best_val_auc,
         best_val_true=best_true,

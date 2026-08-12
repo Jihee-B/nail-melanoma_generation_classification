@@ -1,26 +1,40 @@
-"""Per-run reporting: discover runs, ensemble top-K folds, write Excel.
+"""Per-run reporting: discover runs, ensemble all folds, write Excel.
 
 This is the entry point for evaluating the cross-validation outputs
 produced by ``cross_validate.py``. It walks a project root, finds every
 directory that holds both ``validation_results.xlsx`` and
 ``test_results.xlsx``, and for each one:
 
-    1. Picks the top-K folds by \\|val_auc - test_auc\\|.
-    2. Loads their per-image probabilities (``fold_*_test_results.pkl``).
-    3. Averages probabilities -> thresholds -> ensemble predictions.
-    4. Computes all binary metrics with bootstrap 95% CIs.
-    5. Writes one row of a summary Excel sheet (plus a fold-selection
-       sheet for transparency).
+    1. Loads every fold's per-image test probabilities
+       (``fold_*_test_results.pkl``).
+    2. Averages probabilities across *all* folds (no fold selection).
+    3. Derives the classification threshold from out-of-fold validation
+       predictions via the Youden index (``fold_*_val_results.pkl``),
+       unless a fixed threshold is supplied with ``--threshold``.
+    4. Applies the threshold to produce ensemble predictions.
+    5. Computes all binary metrics with bootstrap 95% CIs.
+    6. Writes one row of a summary Excel sheet (plus a per-fold AUC sheet
+       for transparency).
+
+Why all folds (and not top-K)?
+------------------------------
+An earlier version selected the top-K folds by the smallest
+\\|val_auc - test_auc\\| gap. Because that criterion inspects the *test*
+AUC, it leaks test information into model selection. All folds are now
+ensembled unconditionally, and the decision threshold is taken from
+validation (out-of-fold) predictions only — the test set is never used
+for fold selection or threshold selection.
 
 Usage
 -----
     python -m src.classification.reporting \\
         --project-root runs/ \\
         --out runs/_summary.xlsx \\
-        --topk 3 \\
-        --threshold 0.5 \\
         --n-boot 1000 \\
         --seed 1234
+
+    # To force a fixed cutoff instead of the OOF Youden threshold:
+    python -m src.classification.reporting --project-root runs/ --threshold 0.5
 """
 from __future__ import annotations
 
@@ -28,7 +42,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import matplotlib
 
@@ -39,9 +53,11 @@ import pandas as pd
 from sklearn.metrics import confusion_matrix
 
 from .ensemble import (
-    ensemble_from_topk,
-    load_topk_fold_pkls,
-    select_topk_folds,
+    build_fold_auc_table,
+    compute_oof_youden_cutoff,
+    ensemble_all_folds,
+    load_all_fold_pkls,
+    load_all_val_pkls,
 )
 from .metrics import compute_metrics_with_ci, metricci_to_str
 
@@ -162,14 +178,41 @@ _METRIC_KEYS = (
 _COUNT_KEYS = ("tn", "fp", "fn", "tp")
 
 
+def _resolve_threshold(
+    run_dir: str,
+    fixed_threshold: Optional[float],
+) -> Tuple[float, str]:
+    """Return ``(threshold, source)`` for a run.
+
+    If ``fixed_threshold`` is provided, it is used as-is. Otherwise the
+    Youden-optimal cutoff is computed from the pooled out-of-fold
+    validation predictions (``fold_*_val_results.pkl``). If no validation
+    pkls exist (e.g., older runs), falls back to 0.5.
+    """
+    if fixed_threshold is not None:
+        return float(fixed_threshold), "fixed"
+
+    oof_true, oof_prob = load_all_val_pkls(run_dir)
+    if oof_true.size == 0:
+        print(
+            f"    [warn] {run_dir}: no fold_*_val_results.pkl found; "
+            "falling back to threshold=0.5. Re-run cross_validate.py to "
+            "enable OOF-Youden thresholding.",
+            file=sys.stderr,
+        )
+        return 0.5, "fallback_0.5"
+
+    cutoff = compute_oof_youden_cutoff(oof_true, oof_prob)
+    return cutoff, "oof_youden"
+
+
 def build_report_for_run(
     run_dir: str,
-    topk: int,
-    threshold: float,
     n_boot: int,
     seed: int,
+    fixed_threshold: Optional[float] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Compute ensemble metrics + the fold-selection table for one run.
+    """Compute all-fold ensemble metrics + a per-fold AUC table for one run.
 
     Returns:
         ``(metric_row_df, fold_table_df)`` — single-run frames ready to
@@ -178,11 +221,16 @@ def build_report_for_run(
     val_xlsx = os.path.join(run_dir, "validation_results.xlsx")
     test_xlsx = os.path.join(run_dir, "test_results.xlsx")
 
-    selected_folds, fold_table = select_topk_folds(
-        val_xlsx, test_xlsx, topk=topk
-    )
-    loaded = load_topk_fold_pkls(run_dir, selected_folds)
-    y_true, y_pred, y_prob = ensemble_from_topk(loaded, threshold=threshold)
+    # Threshold from OOF validation (Youden) unless a fixed value is given.
+    threshold, thr_source = _resolve_threshold(run_dir, fixed_threshold)
+
+    # Ensemble across ALL folds (no selection).
+    loaded = load_all_fold_pkls(run_dir)
+    y_true, y_pred, y_prob = ensemble_all_folds(loaded, threshold=threshold)
+
+    # Transparency: per-fold validation / test AUC (reporting only).
+    fold_table = build_fold_auc_table(val_xlsx, test_xlsx)
+
     metrics = compute_metrics_with_ci(
         y_true=y_true,
         y_pred=y_pred,
@@ -205,9 +253,10 @@ def build_report_for_run(
         "model": model,
         "experiment": experiment,
         "run_dir": run_dir,
-        "topk": topk,
+        "n_folds": len(loaded["folds"]),
+        "folds": ",".join(map(str, loaded["folds"])),
         "threshold": threshold,
-        "selected_folds": ",".join(map(str, selected_folds)),
+        "threshold_source": thr_source,
         "pkl_paths": " | ".join(loaded["pkl_path"]),
     }
     for k in _METRIC_KEYS:
@@ -245,10 +294,9 @@ def run(args: argparse.Namespace) -> None:
         try:
             df_row, df_fold = build_report_for_run(
                 run_dir=run_dir,
-                topk=args.topk,
-                threshold=args.threshold,
                 n_boot=args.n_boot,
                 seed=args.seed,
+                fixed_threshold=args.threshold,
             )
             all_rows.append(df_row)
             all_folds.append(df_fold)
@@ -276,7 +324,7 @@ def run(args: argparse.Namespace) -> None:
     with pd.ExcelWriter(out_path, engine="openpyxl") as w:
         summary_df.to_excel(w, index=False, sheet_name="ensemble_metrics")
         if not fold_df.empty:
-            fold_df.to_excel(w, index=False, sheet_name="fold_selection")
+            fold_df.to_excel(w, index=False, sheet_name="fold_auc")
 
     print(f"\n✅ Saved: {out_path}")
 
@@ -287,8 +335,10 @@ def run(args: argparse.Namespace) -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Discover CV runs, ensemble the top-K folds, and write a "
-            "summary Excel with bootstrap-CI metrics."
+            "Discover CV runs, ensemble all folds, and write a summary "
+            "Excel with bootstrap-CI metrics. The classification threshold "
+            "is taken from out-of-fold validation predictions (Youden "
+            "index) unless --threshold is given."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -303,16 +353,14 @@ def parse_args() -> argparse.Namespace:
         help="Output Excel file path.",
     )
     p.add_argument(
-        "--topk",
-        type=int,
-        default=3,
-        help="Number of best folds to ensemble (paper: 3).",
-    )
-    p.add_argument(
         "--threshold",
         type=float,
-        default=0.5,
-        help="Probability cutoff for ensemble predictions.",
+        default=None,
+        help=(
+            "Optional fixed probability cutoff. If omitted (default), the "
+            "Youden-optimal threshold is derived per run from out-of-fold "
+            "validation predictions."
+        ),
     )
     p.add_argument(
         "--n-boot",

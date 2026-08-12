@@ -27,8 +27,9 @@ clinical photos
 2. Generative models  StyleGAN2-ADA  +  DDPM   →  synthetic NM / NUM images
    │
    ▼
-3. Classification     ResNet18 · EfficientNet-b0 · ViT · Swin
-                      (original / +GAN / +DIFF), 10-fold CV, top-3 ensemble
+3. Classification     ResNeXt-50 · EfficientNet-b0 · ViT · Swin
+                      (original / +GAN / +DIFF), 10-fold CV,
+                      full-fold ensemble (OOF-Youden threshold)
 ```
 
 ## Repository structure
@@ -46,8 +47,8 @@ clinical photos
 │   ├── 02b_stylegan_train.sh
 │   ├── 02c_stylegan_generate.sh      # bulk generation
 │   ├── 02d_stylegan_interpolate.sh   # sequential morph
-│   ├── 03a_ddpm_finetune.sh
-│   ├── 03b_ddpm_generate.sh
+│   ├── 03_ddpm_finetune.sh
+│   ├── 03_ddpm_generate.sh
 │   └── 04_train_classifiers.sh
 └── src/
     ├── preprocessing/      convert_to_rgb.py, color_jitter.py, README.md
@@ -107,8 +108,8 @@ NETWORK_PKL=... bash scripts/02d_stylegan_interpolate.sh # sequential morph
 **2b. Generative — DDPM:**
 
 ```bash
-bash scripts/03a_ddpm_finetune.sh         # fine-tune NM, NUM models
-NM_CKPT=... NUM_CKPT=... bash scripts/03b_ddpm_generate.sh
+bash scripts/03_ddpm_finetune.sh         # fine-tune NM, NUM models
+NM_CKPT=... NUM_CKPT=... bash scripts/03_ddpm_generate.sh
 ```
 
 **3. Classification:**
@@ -116,6 +117,15 @@ NM_CKPT=... NUM_CKPT=... bash scripts/03b_ddpm_generate.sh
 ```bash
 DATA_ROOT=/path/to/data bash scripts/04_train_classifiers.sh
 ```
+
+Each training condition is an `ImageFolder` directory; the amount of synthetic
+augmentation is defined entirely by that folder's contents. Populate the
+augmented folders with the desired mix of real and generated images. The paper
+used a synthetic-to-real ratio of 0.8 (800 synthetic images per class; 1,600 in
+total), selected via the ratio sweep in Supplementary Methods S4. After
+training, all folds are ensembled (no fold selection) and the decision
+threshold is derived per run from out-of-fold validation predictions
+(Youden index); pass `--threshold` to `reporting` to force a fixed cutoff.
 
 Folder names in the scripts are placeholders — edit the variables at the top of
 each script (or pass them as environment variables) to match your layout.
